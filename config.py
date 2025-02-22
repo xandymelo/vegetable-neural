@@ -4,9 +4,9 @@ import torchvision
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 hyperparams_list = [
-    {"batch_size": 32, "epochs": 30, "lr": 0.001},
-    {"batch_size": 64, "epochs": 35, "lr": 0.0005},
-    {"batch_size": 128, "epochs": 40, "lr": 0.0001}
+    {"batch_size": 32, "epochs": 15, "lr": 0.001},
+    {"batch_size": 64, "epochs": 15, "lr": 0.0005},
+    {"batch_size": 128, "epochs": 20, "lr": 0.0001}
 ]
 
 # DATA AUMENTATITION
