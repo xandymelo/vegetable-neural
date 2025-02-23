@@ -8,9 +8,9 @@ from train_and_show_results import train_and_show_results
 from config import hyperparams_list, trainset, testset, device
 import os
 
-def setup_inception_model(num_classes, device):
+def setup_inception_model(num_classes, device, model_path=None):
     """
-    Configura o modelo InceptionV3 para fine-tuning
+    Configura o modelo InceptionV3 para fine-tuning, com a opção de carregar pesos pré-treinados.
     """
     # Inicializar o modelo InceptionV3 pré-treinado
     model = models.inception_v3(pretrained=True)
@@ -30,6 +30,11 @@ def setup_inception_model(num_classes, device):
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     for param in model.fc.parameters():
         param.requires_grad = True
+    
+    # Carregar pesos do modelo treinado se model_path for fornecido
+    if model_path:
+        checkpoint = torch.load(model_path)
+        model.load_state_dict(checkpoint, strict=False)  # Usar strict=False para permitir algumas diferenças
     
     return model.to(device)
 

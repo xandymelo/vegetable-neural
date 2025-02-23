@@ -1,142 +1,116 @@
 import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
 from PIL import Image
-import os
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-from sklearn.metrics import confusion_matrix, classification_report
-from collections import defaultdict
 
-from model_trainer import ModelLoader
-
-def evaluate_model_on_folder(model_loader, test_folder, true_labels_dict=None):
-    """
-    Avalia o modelo em uma pasta de imagens e gera métricas de desempenho.
-    
-    Args:
-        model_loader: Instância de ModelLoader
-        test_folder: Pasta contendo as imagens de teste
-        true_labels_dict: Dicionário com {nome_arquivo: classe_verdadeira}
-    """
-    predictions = defaultdict(list)
-    true_labels = []
-    pred_labels = []
-    
-    # Fazer predições para todas as imagens
-    for filename in os.listdir(test_folder):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-            image_path = os.path.join(test_folder, filename)
-            predicted_class, probability, all_probs = model_loader.predict_image(image_path)
+class CustomVGG(nn.Module):
+    def __init__(self, num_classes=15):
+        super(CustomVGG, self).__init__()
+        
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(32),
             
-            # Se temos as labels verdadeiras
-            if true_labels_dict and filename in true_labels_dict:
-                true_class = true_labels_dict[filename]
-                true_labels.append(model_loader.classes.index(true_class))
-                pred_labels.append(model_loader.classes.index(predicted_class))
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(32),
+            nn.MaxPool2d(kernel_size=2, stride=2),
             
-            predictions[predicted_class].append(probability)
+            nn.Conv2d(32, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(128),
+            
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(256),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+        )
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(256 * 56 * 56, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(512, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(512, num_classes),
+        )
+        
+        self._initialize_weights()
     
-    return predictions, true_labels, pred_labels
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+    
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
 
-def plot_prediction_distribution(predictions, title="Distribuição de Predições por Classe"):
-    """Gera gráfico de distribuição das predições por classe"""
-    plt.figure(figsize=(15, 6))
+class ModelLoader:
+    def __init__(self, model_path, num_classes=15):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self._load_model(model_path, num_classes)
+        self.model.eval()
+        
+        self.transform = transforms.Compose([
+            transforms.Resize(224),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
     
-    # Preparar dados
-    classes = list(predictions.keys())
-    counts = [len(predictions[c]) for c in classes]
-    
-    # Criar barras
-    bars = plt.bar(classes, counts)
-    
-    # Personalizar gráfico
-    plt.title(title)
-    plt.xlabel("Classes")
-    plt.ylabel("Número de Predições")
-    plt.xticks(rotation=45, ha='right')
-    
-    # Adicionar valores sobre as barras
-    for bar in bars:
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height,
-                f'{int(height)}',
-                ha='center', va='bottom')
-    
-    plt.tight_layout()
-    plt.show()
+    def _load_model(self, model_path, num_classes):
+        model = CustomVGG(num_classes=num_classes)
+        checkpoint = torch.load(model_path, map_location=self.device)
+        
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+        model_dict = model.state_dict()
+        
+        filtered_dict = {k: v for k, v in state_dict.items() if k in model_dict and model_dict[k].shape == v.shape}
+        model_dict.update(filtered_dict)
+        model.load_state_dict(model_dict)
 
-def plot_confidence_distribution(predictions):
-    """Gera boxplot da distribuição de confiança por classe"""
-    plt.figure(figsize=(15, 6))
-    
-    # Preparar dados para o boxplot
-    data = []
-    labels = []
-    for classe, probs in predictions.items():
-        data.append(probs)
-        labels.append(classe)
-    
-    # Criar boxplot
-    plt.boxplot(data, labels=labels)
-    plt.title("Distribuição de Confiança por Classe")
-    plt.xlabel("Classes")
-    plt.ylabel("Confiança")
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    plt.show()
+        for name, param in model.named_parameters():
+            if name not in filtered_dict:
+                print(f"Reinicializando {name}")
+                if param.dim() >= 2:
+                    nn.init.kaiming_normal_(param)
+                else:
+                    nn.init.constant_(param, 0)
 
-def plot_confusion_matrix(true_labels, pred_labels, classes):
-    """Gera matriz de confusão"""
-    cm = confusion_matrix(true_labels, pred_labels)
-    plt.figure(figsize=(12, 10))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=classes, yticklabels=classes)
-    plt.title('Matriz de Confusão')
-    plt.xlabel('Predição')
-    plt.ylabel('Valor Real')
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    plt.show()
+        return model.to(self.device)
+    
+    def predict_image(self, image_path):
+        image = Image.open(image_path).convert('RGB')
+        image_tensor = self.transform(image).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.model(image_tensor)
+            probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
+            max_prob, predicted = torch.max(probabilities, 0)
+            
+        return predicted.item(), max_prob.item(), probabilities.cpu().numpy()
 
 def main():
-    # Inicializar o modelo
     model_loader = ModelLoader(
-        model_path="./models-trained/inception_model_config3.pth",
+        model_path="./models-trained/inception_model_config1.pth",
         num_classes=15
     )
     
-    # Pasta com as imagens de teste
-    test_folder = "./dataset/vegetable-images/train"
-    
-    # Se você tiver um dicionário com as labels verdadeiras
-    # true_labels_dict = {
-    #     "imagem1.jpg": "Tomato",
-    #     "imagem2.jpg": "Potato",
-    #     # ...
-    # }
-    
-    # Fazer avaliação
-    predictions, true_labels, pred_labels = evaluate_model_on_folder(
-        model_loader, 
-        test_folder,
-        true_labels_dict=None  # Adicione seu dicionário aqui se tiver
-    )
-    
-    # Gerar visualizações
-    plot_prediction_distribution(predictions)
-    plot_confidence_distribution(predictions)
-    
-    # Se tiver as labels verdadeiras, gerar matriz de confusão
-    if true_labels:
-        plot_confusion_matrix(true_labels, pred_labels, model_loader.classes)
-        
-        # Imprimir relatório de classificação
-        print("\nRelatório de Classificação:")
-        print(classification_report(
-            true_labels, 
-            pred_labels, 
-            target_names=model_loader.classes
-        ))
+    class_idx, prob, all_probs = model_loader.predict_image("dataset/vegetable-images/test/Bean/0001.jpg")
+    print(f"Classe predita: {class_idx}, Probabilidade: {prob:.2f}")
 
 if __name__ == "__main__":
     main()
